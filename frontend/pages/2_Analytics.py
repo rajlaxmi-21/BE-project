@@ -8,7 +8,13 @@ import rasterio
 import numpy as np
 from PIL import Image
 
+from datetime import datetime
 
+def format_date(date_str):
+    try:
+        return datetime.strptime(date_str, "%Y%m%d").strftime("%d %b %Y")
+    except:
+        return date_str
     
 if "analysis_done" not in st.session_state:
     st.session_state.analysis_done = False
@@ -288,99 +294,51 @@ if st.session_state.analysis_result:
     before_img = load_image(res["before_image"])
     after_img = load_image(res["after_image"])
 
+    before_date = format_date(res.get("before_date", "N/A"))
+    after_date = format_date(res.get("after_date", "N/A"))
+
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("### 📅 Before")
+        st.markdown(f"### 📅 Before ({before_date})")
         if before_img is not None:
-            st.image(before_img, use_container_width=True)
+            st.image(before_img, width='stretch')
 
     with col2:
-        st.markdown("### 📅 After")
+        st.markdown(f"### 📅 After ({after_date})")
         if after_img is not None:
-            st.image(after_img, use_container_width=True)
+            st.image(after_img, width='stretch')
+# -------------------------------
 
 # -------------------------------
-# 🌲 DEFORESTATION MAP
+# 🌲 DEFORESTATION OVERLAY
 # -------------------------------
 if st.session_state.analysis_result:
 
-    st.markdown("## 🌲 Deforestation Map")
-
     res = st.session_state.analysis_result
 
-    # -------------------------------
-    # 📍 CENTER (use selected coords)
-    # -------------------------------
-    lat, lon = st.session_state.coords
+    st.markdown("## 🌲 Deforestation Map")
 
-    # -------------------------------
-    # 🗺 BASE MAP
-    # -------------------------------
-    defo_map = folium.Map(
-        location=[lat, lon],
-        zoom_start=14,
-        tiles=None
-    )
+    overlay_path = res.get("overlay_image")
 
-    # Satellite layer
-    folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri Satellite",
-    ).add_to(defo_map)
+    if overlay_path:
 
-    # -------------------------------
-    # 🔴 DUMMY POLYGONS (FOR NOW)
-    # Replace with backend data later
-    # -------------------------------
-    dummy_geojson = {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {"name": "Deforested Area"},
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [[
-                        [lon, lat],
-                        [lon + 0.002, lat],
-                        [lon + 0.002, lat + 0.002],
-                        [lon, lat + 0.002],
-                        [lon, lat]
-                    ]]
-                }
-            }
-        ]
-    }
+        overlay_img = load_image(overlay_path)
 
-    # -------------------------------
-    # 🎨 STYLE FUNCTION
-    # -------------------------------
-    def style_function(feature):
-        return {
-            "fillColor": "red",
-            "color": "red",
-            "weight": 2,
-            "fillOpacity": 0.5,
-        }
+        if overlay_img is not None:
+            col1, col2, col3 = st.columns([1, 2, 1])
 
-    # -------------------------------
-    # 📍 ADD POLYGONS
-    # -------------------------------
-    folium.GeoJson(
-        dummy_geojson,
-        name="Deforestation",
-        style_function=style_function,
-        tooltip=folium.GeoJsonTooltip(fields=["name"])
-    ).add_to(defo_map)
+            with col2:
+                st.image(overlay_img, width=500)
 
-    # -------------------------------
-    # 📍 SHOW MAP
-    # -------------------------------
-    st_folium(defo_map, height=500, width=None)
+        else:
+            st.error("❌ Overlay image not loading")
+
+    else:
+        st.error("❌ Overlay path missing from backend")
 
 
-    # -------------------------------
+# -------------------------------
 # 🚫 TOP 5 ILLEGAL POLYGONS
 # -------------------------------
 if st.session_state.analysis_result:

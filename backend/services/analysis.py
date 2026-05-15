@@ -5,36 +5,63 @@ from services.image_fetch import fetch_images
 from utils.image_utils import convert_to_png
 import base64
 
+from services.deforestation import (
+    detect_deforestation,
+    create_overlay_image,
+    save_rgb_image
+)
+import os
+
 def encode_image(path):
     with open(path, "rb") as img:
         return base64.b64encode(img.read()).decode("utf-8")
 
+from services.image_fetch import fetch_images
+from services.deforestation import detect_deforestation, create_overlay_image
+import os
+
+SAVE_PATH = "C:/Users/Shreya/Desktop/results"
+
 def analyze_area(lat, lon):
 
-    # 🔥 MODULE 1 (REAL)
+    os.makedirs(SAVE_PATH, exist_ok=True)
+
+    # MODULE 1
     images = fetch_images(lat, lon)
 
-    # 🔥 Convert to PNG
-    before_img = convert_to_png(images["previous"])
-    after_img = convert_to_png(images["current"])
+    before_path = images["previous"]
+    after_path = images["current"]
 
-    # 🔥 Dummy detection (for now)
-    polygon_wkt = f"POLYGON(({lon} {lat}, {lon+0.01} {lat}, {lon+0.01} {lat+0.01}, {lon} {lat+0.01}, {lon} {lat}))"
+    # ✅ ADD THESE (fetch from images dict)
+    before_date = images.get("previous_date")
+    after_date = images.get("current_date")
 
-    save_detection(polygon_wkt)
+    # MODULE 2
+    rgb_before, rgb_after, mask = detect_deforestation(before_path, after_path)
+
+    overlay_path = os.path.join(SAVE_PATH, "overlay.png")
+    create_overlay_image(rgb_after, mask, overlay_path)
+
+    before_path = os.path.join(SAVE_PATH, "before.png")
+    after_path = os.path.join(SAVE_PATH, "after.png")
+
+    save_rgb_image(rgb_before, before_path)
+    save_rgb_image(rgb_after, after_path)
 
     return {
-    "green_cover_loss": 12.5,
-    "illegal_area_loss": 3.2,
-    "legal_deforestation": 6.8,
-    "ndvi_loss": -0.21,
-    "before_image": encode_image(before_img),
-    "after_image": encode_image(after_img),
-    "illegal_polygons": [
-        {"id": "P1", "area": 2.5, "centroid": [lon, lat]}
-        ]
-    }
+        "green_cover_loss": 12.5,
+        "illegal_area_loss": 2.3,
+        "legal_deforestation": 1.1,
+        "ndvi_loss": 0.23,
 
+        "before_image": before_path,
+        "after_image": after_path,
+        "overlay_image": overlay_path,
+
+        # ✅ NEW
+        "before_date": before_date,
+        "after_date": after_date
+    }
 
 def save_detection(polygon_wkt):
     try:
