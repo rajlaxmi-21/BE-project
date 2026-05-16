@@ -8,7 +8,8 @@ import base64
 from services.deforestation import (
     detect_deforestation,
     create_overlay_image,
-    save_rgb_image
+    save_rgb_image,
+    save_mask_image
 )
 import os
 
@@ -39,8 +40,8 @@ def analyze_area(lat, lon):
     # MODULE 2
     rgb_before, rgb_after, mask = detect_deforestation(before_path, after_path)
 
-    overlay_path = os.path.join(SAVE_PATH, "overlay.png")
-    create_overlay_image(rgb_after, mask, overlay_path)
+    mask_path = os.path.join(SAVE_PATH, "deforestation_mask.png")
+    save_mask_image(rgb_after, mask, mask_path)
 
     before_path = os.path.join(SAVE_PATH, "before.png")
     after_path = os.path.join(SAVE_PATH, "after.png")
@@ -56,7 +57,7 @@ def analyze_area(lat, lon):
 
         "before_image": before_path,
         "after_image": after_path,
-        "overlay_image": overlay_path,
+        "overlay_image": mask_path,
 
         # ✅ NEW
         "before_date": before_date,

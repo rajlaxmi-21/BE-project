@@ -5,7 +5,7 @@ import re
 
 KEY = "C:/Users/Shreya/Downloads/s2dr3-keypair.pem"
 SAVE_PATH = "C:/Users/Shreya/Desktop/results"
-HOST = "ubuntu@18.219.169.231"
+HOST = "ubuntu@18.225.177.179"
 
 
 # -------------------------------

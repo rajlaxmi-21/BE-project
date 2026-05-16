@@ -147,7 +147,7 @@ def detect_deforestation(before_path, after_path):
     # Keep only vegetation loss
     diff = ndvi_b - ndvi_a
 
-    mask = np.logical_and(mask == 1, diff > 0.1)
+    # mask = np.logical_and(mask == 1, diff > 0.1)
 
     # -------------------------------
     # RESIZE
@@ -190,5 +190,27 @@ def save_rgb_image(rgb, save_path):
     img = (rgb * 255).astype(np.uint8)
 
     Image.fromarray(img).save(save_path)
+
+    return save_path
+
+# -------------------------------
+# SAVE VISUAL DEFORESTATION IMAGE
+# -------------------------------
+def save_mask_image(rgb, mask, save_path):
+
+    # Copy RGB image
+    output = rgb.copy()
+
+    # Make regions thicker
+    mask = binary_dilation(mask, structure=np.ones((4,4)))
+
+    # Apply RED color on mask
+    output[mask == 1] = [1, 0, 0]
+
+    # Convert to uint8
+    output = (output * 255).astype(np.uint8)
+
+    # Save
+    Image.fromarray(output).save(save_path)
 
     return save_path
