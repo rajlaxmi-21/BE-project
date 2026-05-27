@@ -7,6 +7,10 @@ from scipy.ndimage import (
     binary_closing,
     binary_dilation
 )
+import geopandas as gpd
+from rasterio.features import shapes
+from shapely.geometry import shape
+from sqlalchemy import create_engine, text
 
 # -------------------------------
 # LOAD MODEL
@@ -66,19 +70,33 @@ def load_bands(path):
         # NORMALIZATION
         # -------------------------------
 
-        # Percentile stretch
-        p2 = np.percentile(rgb, 2)
-        p98 = np.percentile(rgb, 98)
+        # -------------------------------
+        # SAFE NORMALIZATION
+        # -------------------------------
 
-        rgb = (rgb - p2) / (p98 - p2)
+        rgb = np.nan_to_num(rgb)
 
-        # Clip values
-        rgb = np.clip(rgb, 0, 1)
+        # Per-channel normalization
+        for i in range(3):
 
-        # Slight gamma correction
+            band = rgb[:, :, i]
+
+            p2 = np.percentile(band, 2)
+            p98 = np.percentile(band, 98)
+
+            # Prevent divide-by-zero
+            if (p98 - p2) < 1e-5:
+                band = np.zeros_like(band)
+            else:
+                band = (band - p2) / (p98 - p2)
+
+            rgb[:, :, i] = np.clip(band, 0, 1)
+
+        # Gamma correction
         rgb = rgb ** 0.9
+        
 
-    return red, nir, rgb
+        return red, nir, rgb
 
 # -------------------------------
 # NDVI
@@ -147,7 +165,7 @@ def detect_deforestation(before_path, after_path):
     # Keep only vegetation loss
     diff = ndvi_b - ndvi_a
 
-    # mask = np.logical_and(mask == 1, diff > 0.1)
+    mask = np.logical_and(mask == 1, diff > 0.1)
 
     # -------------------------------
     # RESIZE
@@ -155,9 +173,12 @@ def detect_deforestation(before_path, after_path):
     rgb_before = resize_image(rgb_before)
     rgb_after = resize_image(rgb_after)
 
+    original_mask = mask.copy()
+
     mask = resize_image(mask.astype(np.uint8))
 
-    return rgb_before, rgb_after, mask
+    return rgb_before, rgb_after, mask, original_mask
+
 
 # -------------------------------
 # OVERLAY IMAGE
@@ -214,3 +235,69 @@ def save_mask_image(rgb, mask, save_path):
     Image.fromarray(output).save(save_path)
 
     return save_path
+
+# ------------------------------------------------
+# MASK → POLYGONS
+# ------------------------------------------------
+def mask_to_polygons(reference_tif_path, mask):
+
+    with rasterio.open(reference_tif_path) as src:
+
+        transform = src.transform
+        crs = src.crs
+
+    polygons = []
+
+    for geom, value in shapes(
+        mask.astype("uint8"),
+        mask=mask.astype(bool),
+        transform=transform
+    ):
+
+        if value == 1:
+            polygons.append(shape(geom))
+
+    gdf = gpd.GeoDataFrame(
+        geometry=polygons,
+        crs=crs
+    )
+
+    return gdf
+
+# ------------------------------------------------
+# SAVE POLYGONS TO POSTGIS
+# ------------------------------------------------
+def insert_deforestation_to_postgis(deforestation_gdf):
+
+    if deforestation_gdf.empty:
+        print("No polygons detected")
+        return
+
+    # Convert CRS
+    gdf = deforestation_gdf.to_crs(epsg=4326).copy()
+
+    # Add detected date
+    from datetime import date
+    gdf["detected_at"] = date.today()
+
+    # Keep required columns
+    gdf = gdf[["geometry", "detected_at"]]
+
+    # PostgreSQL connection
+    engine = create_engine(
+        "postgresql+psycopg2://postgres:Shreya20@localhost:5433/FinalYearProject"
+    )
+
+    # Clear previous detections
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM detected_deforestation;"))
+
+    # Insert into PostGIS
+    gdf.to_postgis(
+        name="detected_deforestation",
+        con=engine,
+        if_exists="append",
+        index=False
+    )
+
+    print(f"Inserted {len(gdf)} polygons")
