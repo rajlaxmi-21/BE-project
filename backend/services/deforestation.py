@@ -223,7 +223,7 @@ def save_mask_image(rgb, mask, save_path):
     output = rgb.copy()
 
     # Make regions thicker
-    mask = binary_dilation(mask, structure=np.ones((4,4)))
+    mask = binary_dilation(mask, structure=np.ones((20,20)))
 
     # Apply RED color on mask
     output[mask == 1] = [1, 0, 0]

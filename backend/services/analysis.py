@@ -12,6 +12,11 @@ from services.deforestation import (
     insert_deforestation_to_postgis
 )
 
+from services.verification import (
+    verify_deforestation_against_permits,
+    calculate_summary_stats
+)
+
 SAVE_PATH = "C:/Users/Shreya/Desktop/results"
 
 
@@ -48,6 +53,10 @@ def analyze_area(lat, lon):
     # Save into PostGIS
     insert_deforestation_to_postgis(gdf)
 
+    verify_deforestation_against_permits()
+
+    stats = calculate_summary_stats()
+
     # Save mask visualization
     mask_path = os.path.join(SAVE_PATH, "deforestation_mask.png")
 
@@ -61,10 +70,14 @@ def analyze_area(lat, lon):
     save_rgb_image(rgb_after, after_img_path)
 
     return {
+        "green_cover_loss":
+            stats["total_green_cover_loss_km2"],
 
-        "green_cover_loss": 12.5,
-        "illegal_area_loss": 2.3,
-        "legal_deforestation": 1.1,
+        "illegal_area_loss":
+            stats["illegal_area_km2"],
+
+        "legal_deforestation":
+            stats["legal_area_km2"],
         "ndvi_loss": 0.23,
 
         "before_image": before_img_path,
