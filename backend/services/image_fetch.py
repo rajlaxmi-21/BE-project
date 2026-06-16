@@ -3,9 +3,9 @@ import os
 import time
 import re
 
-KEY = "C:/Users/Shreya/Downloads/s2dr3-keypair.pem"
-SAVE_PATH = "C:/Users/Shreya/Desktop/results"
-HOST = "ubuntu@18.226.72.248"
+KEY = "/Users/rajlaxmiawatade/Downloads/s2dr3-keypair.pem"
+SAVE_PATH = "/Users/rajlaxmiawatade/Desktop/results"
+HOST = "ubuntu@18.223.15.66"
 
 
 # -------------------------------

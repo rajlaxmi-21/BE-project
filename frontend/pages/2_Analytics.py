@@ -265,22 +265,22 @@ if st.session_state.analysis_result:
     with c1:
         with st.container(border=True):
             st.markdown("🌿 **Green Cover Loss**")
-            st.markdown(f"### {res['green_cover_loss']} %")
+            st.markdown(f"### {res['total_green_cover_loss_km2']} %")
 
     with c2:
         with st.container(border=True):
             st.markdown("🚫 **Illegal Area Loss**")
-            st.markdown(f"### {res['illegal_area_loss']} km²")
+            st.markdown(f"### {res['illegal_area_km2']} km²")
 
     with c3:
         with st.container(border=True):
-            st.markdown("📜 **Legal Deforestation**")
-            st.markdown(f"### {res['legal_deforestation']} km²")
+            st.markdown("📜 **Legal Loss**")
+            st.markdown(f"### {res['legal_area_km2']} km²")
 
     with c4:
         with st.container(border=True):
-            st.markdown("📉 **NDVI Loss**")
-            st.markdown(f"### {res['ndvi_loss']}")
+            st.markdown("📉 **Total Legal Patches**")
+            st.markdown(f"### {res['total_legal_deforestation_count']} patches")
 
 # -------------------------------
 # 🛰 BEFORE & AFTER IMAGES
@@ -291,8 +291,8 @@ if st.session_state.analysis_result:
 
     st.markdown("## 🛰 Before vs After Satellite View")
 
-    before_img = load_image(res["before_image"])
-    after_img = load_image(res["after_image"])
+    before_img = load_image(res["before_rgb"])
+    after_img = load_image(res["after_rgb"])
 
     before_date = format_date(res.get("before_date", "N/A"))
     after_date = format_date(res.get("after_date", "N/A"))
@@ -301,15 +301,18 @@ if st.session_state.analysis_result:
 
     with col1:
         st.markdown(f"### 📅 Before ({before_date})")
+
         if before_img is not None:
-            st.image(before_img, width='stretch')
+            st.image(before_img, use_container_width=True)
 
     with col2:
         st.markdown(f"### 📅 After ({after_date})")
-        if after_img is not None:
-            st.image(after_img, width='stretch')
-# -------------------------------
 
+        if after_img is not None:
+            st.image(after_img, use_container_width=True)
+# -------------------------------
+# 🌲 DEFORESTATION OVERLAY
+# -------------------------------
 # -------------------------------
 # 🌲 DEFORESTATION OVERLAY
 # -------------------------------
@@ -319,23 +322,20 @@ if st.session_state.analysis_result:
 
     st.markdown("## 🌲 Deforestation Map")
 
-    overlay_path = res.get("overlay_image")
+    overlay_img = load_image(res["overlay"])
 
-    if overlay_path:
+    if overlay_img is not None:
 
-        overlay_img = load_image(overlay_path)
+        col1, col2, col3 = st.columns([1, 2, 1])
 
-        if overlay_img is not None:
-            col1, col2, col3 = st.columns([1, 2, 1])
-
-            with col2:
-                st.image(overlay_img, width=500)
-
-        else:
-            st.error("❌ Overlay image not loading")
+        with col2:
+            st.image(
+                overlay_img,
+                use_container_width=True
+            )
 
     else:
-        st.error("❌ Overlay path missing from backend")
+        st.error("❌ Overlay image not loading")
 
 
 # -------------------------------
@@ -350,14 +350,7 @@ if st.session_state.analysis_result:
     # -------------------------------
     # 🔗 BACKEND DATA (replace later)
     # -------------------------------
-    illegal_polygons = res.get("illegal_polygons", [
-        {"id": "P1", "area": 2.5, "centroid": [73.88, 18.58]},
-        {"id": "P2", "area": 2.1, "centroid": [73.89, 18.57]},
-        {"id": "P3", "area": 1.9, "centroid": [73.87, 18.56]},
-        {"id": "P4", "area": 1.5, "centroid": [73.86, 18.55]},
-        {"id": "P5", "area": 1.2, "centroid": [73.85, 18.54]},
-        {"id": "P6", "area": 0.9, "centroid": [73.84, 18.53]},
-    ])
+    illegal_polygons = res.get("illegal_polygons", [])
 
     # -------------------------------
     # 🔽 SORT DESC (IMPORTANT)

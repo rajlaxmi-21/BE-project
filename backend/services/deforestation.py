@@ -1,298 +1,303 @@
-import rasterio
 import numpy as np
-import joblib
-from PIL import Image
-from scipy.ndimage import (
-    binary_opening,
-    binary_closing,
-    binary_dilation
-)
+import rasterio
 import geopandas as gpd
+import matplotlib.pyplot as plt
+
+from scipy.ndimage import binary_opening, binary_closing
+from skimage.measure import label, regionprops
 from rasterio.features import shapes
 from shapely.geometry import shape
-from sqlalchemy import create_engine, text
+from rasterio.features import shapes
+import psycopg2
 
-# -------------------------------
-# LOAD MODEL
-# -------------------------------
-MODEL_PATH = "model/model.pkl"
-model = joblib.load(MODEL_PATH)
+from sqlalchemy import create_engine
+from datetime import date
 
-# -------------------------------
-# RESIZE FUNCTION (NO CV2)
-# -------------------------------
-def resize_image(img, scale=0.4):
 
-    h, w = img.shape[:2]
-    new_size = (int(w * scale), int(h * scale))
 
-    # Convert to uint8 for PIL
-    if img.dtype != np.uint8:
-        img_temp = (img * 255).astype(np.uint8)
-    else:
-        img_temp = img
+def compute_features(img):
+    """
+    Expected band order:
+    [Blue, Green, Red, RedEdge, NIR, SWIR1, SWIR2]
 
-    img_pil = Image.fromarray(img_temp)
-    img_resized = img_pil.resize(new_size, Image.BILINEAR)
+    Output shape:
+    (H, W, 9)
+    """
+    with rasterio.open(img) as src:
+        blue = src.read(1).astype("float32")
+        green = src.read(2).astype("float32")
+        red = src.read(3).astype("float32")
+        re1 = src.read(4).astype("float32")
+        nir = src.read(7).astype("float32")
+        swir1 = src.read(9).astype("float32")
+        swir2 = src.read(10).astype("float32")
 
-    # Convert back to float [0,1]
-    if len(img.shape) == 3:
-        return np.array(img_resized) / 255.0
-    else:
-        return np.array(img_resized)
+    # Normalize reflectance
+    bluef  = blue / 10000
+    greenf = green / 10000
+    redf   = red / 10000
+    re1f   = re1 / 10000
+    nirf   = nir / 10000
+    swir1f = swir1 / 10000
+    swir2f = swir2 / 10000
 
-# -------------------------------
-# CONVERT TO UINT8
-# -------------------------------
-def to_uint8(img):
-    return (img * 255).astype(np.uint8)
+    eps = 1e-9
 
-# -------------------------------
-# LOAD BANDS + NORMALIZATION
-# -------------------------------
-def load_bands(path):
+    # Spectral indices
+    ndvi = (nirf - redf) / (nirf + redf + eps)
+    ndre = (nirf - re1f) / (nirf + re1f + eps)
+    ndmi = (nirf - swir1f) / (nirf + swir1f + eps)
+    nbr  = (nirf - swir2f) / (nirf + swir2f + eps)
+    evi  = 2.5 * (nirf - redf) / (nirf + 6*redf - 7.5*bluef + 1 + eps)
 
-    with rasterio.open(path) as src:
+    # Floating Algae Index (you used this in training)
+    lambda_red = 665
+    lambda_nir = 842
+    lambda_swir1 = 1610
 
-        # NDVI bands
-        red = src.read(4).astype(np.float32)
-        nir = src.read(8).astype(np.float32)
+    nir_baseline = redf + (swir1f - redf) * (
+        (lambda_nir - lambda_red) / (lambda_swir1 - lambda_red)
+    )
+    fai = nirf - nir_baseline
 
-        # RGB bands
-        r = src.read(3).astype(np.float32)
-        g = src.read(2).astype(np.float32)
-        b = src.read(1).astype(np.float32)
+    # Final feature stack for RF
+    feature_stack = np.stack(
+        [re1f, nirf, swir1f],
+        axis=-1
+    )
+    # print("Feature stack shape:", feature_stack.shape)
+    # print("Feature mins:", np.min(feature_stack, axis=(0,1)))
+    # print("Feature maxs:", np.max(feature_stack, axis=(0,1)))
+    return feature_stack
 
-        # Stack RGB
-        rgb = np.stack([r, g, b], axis=-1)
 
-        # -------------------------------
-        # NORMALIZATION
-        # -------------------------------
+# ============================================================
+# 2. RF PREDICTION
+# ============================================================
+def predict_vegetation_mask(tif_path, model):
+    with rasterio.open(tif_path) as src:
+        img = src.read()
 
-        # -------------------------------
-        # SAFE NORMALIZATION
-        # -------------------------------
+    features = compute_features(tif_path)
+    h, w, n_features = features.shape
 
-        rgb = np.nan_to_num(rgb)
+    # reshape correctly
+    X = features.reshape(-1, n_features)
+    
+    # VALID PIXELS ONLY (same as your manual code)
+    valid = np.all(np.isfinite(X), axis=1)
+    # print("Total pixels:", X.shape[0])
+    # print("Valid pixels:", np.sum(valid))
+    # initialize prediction
+    pred_flat = np.zeros(X.shape[0], dtype=np.uint8)
 
-        # Per-channel normalization
-        for i in range(3):
+    # predict ONLY valid pixels
+    pred_flat[valid] = model.predict(X)
 
-            band = rgb[:, :, i]
+    # reshape back
+    mask = pred_flat.reshape(h, w)
 
-            p2 = np.percentile(band, 2)
-            p98 = np.percentile(band, 98)
+    return mask, img
 
-            # Prevent divide-by-zero
-            if (p98 - p2) < 1e-5:
-                band = np.zeros_like(band)
-            else:
-                band = (band - p2) / (p98 - p2)
 
-            rgb[:, :, i] = np.clip(band, 0, 1)
+# ============================================================
+# 3. RAW DEFORESTATION
+# ============================================================
+def get_raw_deforestation(before_mask, after_mask):
+    """
+    Deforestation = vegetation before AND not vegetation after
+    """
+    return ((before_mask == 1) & (after_mask == 0)).astype(np.uint8)
 
-        # Gamma correction
-        rgb = rgb ** 0.9
+
+# ============================================================
+# 4. CLEAN MASK
+# ============================================================
+def clean_deforestation_mask(raw_mask, open_size=3, close_size=5):
+    clean = binary_opening(raw_mask, structure=np.ones((open_size, open_size)))
+    clean = binary_closing(clean, structure=np.ones((close_size, close_size)))
+    return clean.astype(np.uint8)
+
+
+# ============================================================
+# 5. REMOVE SMALL PATCHES
+# ============================================================
+def remove_small_patches(mask, min_patch_pixels=100):
+    labeled = label(mask)
+    regions = regionprops(labeled)
+
+    filtered = np.zeros_like(mask, dtype=np.uint8)
+
+    for region in regions:
+        if region.area >= min_patch_pixels:
+            filtered[labeled == region.label] = 1
+
+    return filtered
+
+
+def save_mask_as_tif(reference_path, mask, output_path):
+    with rasterio.open(reference_path) as src:
+        profile = src.profile.copy()
+
+        profile.update(
+            dtype=rasterio.uint8,
+            count=1,
+            compress='lzw',
+            nodata=0
+        )
+
+        mask_to_save = (mask.astype(np.uint8) * 255)
+
+        with rasterio.open(output_path, 'w', **profile) as dst:
+            dst.write(mask_to_save, 1)
+
+
+
+# ============================================================
+# 6. MAIN DEBUG FUNCTION
+# ============================================================
+def detect_deforestation(
+    before_path,
+    after_path,
+    model,
+    min_patch_pixels=100,
+    open_size=3,
+    close_size=5,
+):
+    """
+    Detect deforestation between before and after TIFFs.
+
+    For now:
+    - NO polygon conversion
+    - NO saving
+    - ONLY visualization + masks
+
+    Returns:
+    - before_mask
+    - after_mask
+    - raw_deforestation
+    - filtered_mask
+    """
+
+    # Step 1: Predict vegetation masks
+    before_mask, before_img = predict_vegetation_mask(before_path, model)
+    after_mask, after_img = predict_vegetation_mask(after_path, model)
+
+    # Step 2: Detect raw vegetation loss
+    raw_deforestation = get_raw_deforestation(before_mask, after_mask)
+
+    # Step 3: Clean noise
+    clean_mask = clean_deforestation_mask(raw_deforestation, open_size, close_size)
+
+    # Step 4: Remove tiny patches
+    filtered_mask = remove_small_patches(clean_mask, min_patch_pixels=min_patch_pixels)
+    # Step 6: Save outputs
+    save_mask_as_tif(before_path, raw_deforestation, "raw_deforestation.tif")
+    save_mask_as_tif(before_path, filtered_mask, "clean_deforestation.tif")
+
+    before_rgb = np.dstack([before_img[2], before_img[1], before_img[0]])
+    before_rgb = before_rgb / np.percentile(before_rgb, 98)
+    before_rgb = np.clip(before_rgb, 0, 1)
+
+
+    after_rgb  = np.dstack([after_img[2], after_img[1], after_img[0]])
+    after_rgb  = after_rgb / np.percentile(after_rgb, 98)
+    after_rgb  = np.clip(after_rgb, 0, 1)
+
+    overlay = after_rgb.copy()
+    overlay[filtered_mask == 1] = [1, 0, 0]
+    # Step 5: Visualize
+    """
+    if visualize:
+        before_rgb = np.dstack([before_img[2], before_img[1], before_img[0]])
+        after_rgb  = np.dstack([after_img[2], after_img[1], after_img[0]])
+
+        # simple contrast stretch
+        before_rgb = before_rgb / np.percentile(before_rgb, 98)
+        after_rgb  = after_rgb / np.percentile(after_rgb, 98)
+
+        before_rgb = np.clip(before_rgb, 0, 1)
+        after_rgb  = np.clip(after_rgb, 0, 1)
+
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
         
+    
+        axes[0, 0].imshow(before_rgb)
+        axes[0, 0].set_title("Before RGB")
+        axes[0, 0].axis("off")
 
-        return red, nir, rgb
+        axes[0, 1].imshow(before_mask, cmap="Greens")
+        axes[0, 1].set_title("Before Vegetation Mask")
+        axes[0, 1].axis("off")
 
-# -------------------------------
-# NDVI
-# -------------------------------
-def compute_ndvi(nir, red):
+        axes[0, 2].imshow(after_rgb)
+        axes[0, 2].set_title("After RGB")
+        axes[0, 2].axis("off")
 
-    return (nir - red) / (nir + red + 1e-6)
+        axes[1, 0].imshow(after_mask, cmap="Greens")
+        axes[1, 0].set_title("After Vegetation Mask")
+        axes[1, 0].axis("off")
 
-# -------------------------------
-# FEATURES
-# -------------------------------
-def create_features(ndvi_before, ndvi_after):
+        axes[1, 1].imshow(raw_deforestation, cmap="Reds")
+        axes[1, 1].set_title("Raw Deforestation")
+        axes[1, 1].axis("off")
 
-    diff = ndvi_before - ndvi_after
+        axes[1, 2].imshow(filtered_mask, cmap="Reds")
+        axes[1, 2].set_title("Cleaned Deforestation")
+        axes[1, 2].axis("off")
 
-    features = np.stack([
-        ndvi_before.flatten(),
-        ndvi_after.flatten(),
-        diff.flatten()
-    ], axis=1)
+        plt.tight_layout()
+        plt.show()
+    """
 
-    return features
-
-# -------------------------------
-# BATCH PREDICTION
-# -------------------------------
-def predict_in_batches(model, features, batch_size=50000):
-
-    preds = []
-
-    for i in range(0, len(features), batch_size):
-
-        batch = features[i:i+batch_size]
-        pred = model.predict(batch)
-
-        preds.append(pred)
-
-    return np.concatenate(preds)
-
-# -------------------------------
-# MAIN FUNCTION
-# -------------------------------
-def detect_deforestation(before_path, after_path):
-
-    red_b, nir_b, rgb_before = load_bands(before_path)
-    red_a, nir_a, rgb_after = load_bands(after_path)
-
-    # NDVI
-    ndvi_b = compute_ndvi(nir_b, red_b)
-    ndvi_a = compute_ndvi(nir_a, red_a)
-
-    # Features
-    features = create_features(ndvi_b, ndvi_a)
-
-    # Predictions
-    preds = predict_in_batches(model, features)
-
-    mask = preds.reshape(ndvi_b.shape)
-
-    # -------------------------------
-    # CLEAN MASK
-    # -------------------------------
-    mask = binary_opening(mask, structure=np.ones((3,3)))
-    mask = binary_closing(mask, structure=np.ones((5,5)))
-
-    # Keep only vegetation loss
-    diff = ndvi_b - ndvi_a
-
-    mask = np.logical_and(mask == 1, diff > 0.1)
-
-    # -------------------------------
-    # RESIZE
-    # -------------------------------
-    rgb_before = resize_image(rgb_before)
-    rgb_after = resize_image(rgb_after)
-
-    original_mask = mask.copy()
-
-    mask = resize_image(mask.astype(np.uint8))
-
-    return rgb_before, rgb_after, mask, original_mask
+    return before_rgb, after_rgb, before_mask, after_mask, overlay, filtered_mask
 
 
-# -------------------------------
-# OVERLAY IMAGE
-# -------------------------------
-def create_overlay_image(rgb, mask, save_path):
-
-    # Make regions thicker
-    mask = binary_dilation(mask, structure=np.ones((4,4)))
-
-    overlay = rgb.copy()
-
-    # -------------------------------
-    # BRIGHT RED REGIONS
-    # -------------------------------
-    overlay[mask == 1] = [1, 0, 0]
-
-    # Convert to uint8
-    overlay = (overlay * 255).astype(np.uint8)
-
-    # Save
-    Image.fromarray(overlay).save(save_path)
-
-    return save_path
-
-# -------------------------------
-# SAVE NORMALIZED RGB IMAGE
-# -------------------------------
-def save_rgb_image(rgb, save_path):
-
-    img = (rgb * 255).astype(np.uint8)
-
-    Image.fromarray(img).save(save_path)
-
-    return save_path
-
-# -------------------------------
-# SAVE VISUAL DEFORESTATION IMAGE
-# -------------------------------
-def save_mask_image(rgb, mask, save_path):
-
-    # Copy RGB image
-    output = rgb.copy()
-
-    # Make regions thicker
-    mask = binary_dilation(mask, structure=np.ones((20,20)))
-
-    # Apply RED color on mask
-    output[mask == 1] = [1, 0, 0]
-
-    # Convert to uint8
-    output = (output * 255).astype(np.uint8)
-
-    # Save
-    Image.fromarray(output).save(save_path)
-
-    return save_path
-
-# ------------------------------------------------
-# MASK → POLYGONS
-# ------------------------------------------------
-def mask_to_polygons(reference_tif_path, mask):
+def mask_to_polygons(reference_tif_path, filtered_mask):
+    """
+    Convert binary mask to polygons using raster georeferencing.
+    Returns a GeoDataFrame.
+    """
 
     with rasterio.open(reference_tif_path) as src:
-
         transform = src.transform
         crs = src.crs
 
     polygons = []
 
     for geom, value in shapes(
-        mask.astype("uint8"),
-        mask=mask.astype(bool),
+        filtered_mask.astype("uint8"),
+        mask=filtered_mask.astype(bool),
         transform=transform
     ):
-
         if value == 1:
             polygons.append(shape(geom))
 
-    gdf = gpd.GeoDataFrame(
-        geometry=polygons,
-        crs=crs
-    )
+    gdf = gpd.GeoDataFrame(geometry=polygons, crs=crs)
 
     return gdf
 
-# ------------------------------------------------
-# SAVE POLYGONS TO POSTGIS
-# ------------------------------------------------
-def insert_deforestation_to_postgis(deforestation_gdf):
+def insert_deforestation_to_postgis(deforestation_gdf, detected_at):
+    """
+    Insert deforestation polygons into existing PostGIS table:
+    detected_deforestation(geometry, detected_at)
+    """
 
-    if deforestation_gdf.empty:
-        print("No polygons detected")
-        return
-
-    # Convert CRS
+    # 1. Convert CRS to EPSG:4326 because your table expects that
     gdf = deforestation_gdf.to_crs(epsg=4326).copy()
 
-    # Add detected date
-    from datetime import date
-    gdf["detected_at"] = date.today()
+    # 2. Add detected date
+    gdf["detected_at"] = detected_at
 
-    # Keep required columns
+    # 3. Keep only columns that exist in your table
     gdf = gdf[["geometry", "detected_at"]]
 
-    # PostgreSQL connection
+    # 4. PostgreSQL connection
     engine = create_engine(
-        "postgresql+psycopg2://postgres:Shreya20@localhost:5433/FinalYearProject"
+    "postgresql+psycopg2://rajlaxmiawatade@localhost:5432/FinalYearProject"
     )
 
-    # Clear previous detections
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM detected_deforestation;"))
-
-    # Insert into PostGIS
+    # 5. Insert into PostGIS table
     gdf.to_postgis(
         name="detected_deforestation",
         con=engine,
@@ -300,4 +305,4 @@ def insert_deforestation_to_postgis(deforestation_gdf):
         index=False
     )
 
-    print(f"Inserted {len(gdf)} polygons")
+    print(f"Inserted {len(gdf)} polygons into detected_deforestation")
