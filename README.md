@@ -60,7 +60,8 @@ CREATE TABLE permits (
 CREATE TABLE detected_deforestation (
     detection_id SERIAL PRIMARY KEY,
     geometry GEOMETRY(POLYGON, 4326),
-    centroid GEOMETRY(POINT, 4326),
+    centroid GEOMETRY(POINT, 4326)
+        GENERATED ALWAYS AS (ST_Centroid(geometry)) STORED,
     detected_at DATE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
