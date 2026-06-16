@@ -1,7 +1,7 @@
 # Setup Guide
 
 ## 1. Clone the Repository
-git clone https://github.com/SHREYA-NAVALE/FinalYearProject.git  
+git clone (https://github.com/rajlaxmi-21/BE-project.git)
 cd FinalYearProject
 
 ---
