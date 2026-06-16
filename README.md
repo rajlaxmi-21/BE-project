@@ -1,5 +1,10 @@
 # Setup Guide
 
+### Necessary changes to make
+
+1. Change db configurations + port number
+2. Change file paths
+
 ## 1. Clone the Repository
 git clone (https://github.com/rajlaxmi-21/BE-project.git)
 cd FinalYearProject
